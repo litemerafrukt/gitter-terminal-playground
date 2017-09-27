@@ -1,1 +1,1 @@
-module.exports = 'your token goes here'
+module.exports = 'your api key'

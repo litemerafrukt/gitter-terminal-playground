@@ -3,10 +3,20 @@
 const Gitter = require('node-gitter')
 const M = require('most')
 const R = require('ramda')
+const fetch = require('node-fetch')
 
 const token = require('./gitter-token')
 
 const gitter = new Gitter(token)
+
+//////////////////////////////////////////////////////
+// Gitter REST api
+//
+
+const gitterLatestMessage = roomId =>
+  `https://api.gitter.im/v1/rooms/${roomId}/chatMessages?limit=1`
+
+const gitterApiOptions = { headers: { Authorization: 'Bearer ' + token } }
 
 //////////////////////////////////////////////////////
 // Helpers
@@ -14,18 +24,27 @@ const gitter = new Gitter(token)
 
 const isPublic = R.propEq('public', true)
 
-const gitterMessageToConsole = ({
-  model: { text, sent, fromUser: { username } }
-}) => {
+const gitterMessageToConsole = ({ text, sent, fromUser: { username } }) => {
   console.log(`${username} @ ${sent}\n${text}\n`)
 }
+
+//////////////////////////////////////////////////////
+// Streams
+//
 
 const room$ = M.fromPromise(gitter.currentUser().then(user => user.rooms()))
   .chain(M.from)
   .filter(isPublic)
   .map(({ id, name }) => ({ id, name }))
-// .observe(console.log)
-// .then(() => console.log('all done!'))
+
+/**
+ * To get them in time-order...
+ * Fetch rooms into array, fetch first message from every room, sort array, make stream
+ */
+const createHistory$ = roomId =>
+  M.fromPromise(
+    fetch(gitterLatestMessage(roomId), gitterApiOptions).then(res => res.json())
+  ).chain(M.from)
 
 const createMessage$ = roomId =>
   M.fromPromise(
@@ -35,12 +54,17 @@ const createMessage$ = roomId =>
     })
   ).chain(room => M.fromEvent('chatMessages', room))
 
-// createMessage$('59ca317cd73408ce4f776692').observe(gitterMessageToConsole)
+//////////////////////////////////////////////////////
+// Run stuff
+//
 
-const main$ = room$.chain(room => createMessage$(room.id))
+const history$ = room$.multicast().chain(room => createHistory$(room.id))
 
-main$
-  .tap(console.log)
+const message$ = room$
+  .chain(room => createMessage$(room.id))
   .filter(({ operation }) => operation === 'create')
-  .observe(gitterMessageToConsole)
-  .catch(err => console.error(err))
+  .map(R.prop('model'))
+
+const main$ = M.concat(history$, message$)
+
+main$.observe(gitterMessageToConsole).catch(err => console.error(err))
